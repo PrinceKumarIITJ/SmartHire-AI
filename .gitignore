@@ -1,8 +1,22 @@
 venv/
+.venv/
 .env
 __pycache__/
+*.pyc
+*.pyo
+*.db
+*.bin
+*.log
+
+# Node & Next.js
+node_modules/
+.next/
+out/
+build/
+
+# Local data & reports
 data/resumes/
 data/faiss_index/
 reports/
 fix_quotes.py
-.venv/
+.DS_Store
