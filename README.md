@@ -1,62 +1,61 @@
 # SmartHire AI — Multi-Agent Recruitment Intelligence Platform
 
-**SmartHire AI** is a production-grade full-stack AI recruitment platform that orchestrates **7 specialized AI agents** using **LangGraph**, **Gemini 2.5 Flash**, **FastAPI**, **Next.js 14**, **SQLite**, and **FAISS** to deliver structured resume parsing, Explainable AI (XAI) candidate ranking, demographic-blind bias auditing, RAG candidate resume chat, and human-in-the-loop candidate email drafting.
+**SmartHire AI** is a production-grade full-stack AI recruitment platform that orchestrates **specialized AI agents** using **LangGraph**, **Gemini 2.5 Flash**, **FastAPI**, **Next.js 14**, **SQLite**, and **FAISS** to deliver structured resume parsing, Explainable AI (XAI) candidate ranking, demographic-blind bias auditing, RAG candidate resume chat, and human-in-the-loop candidate email drafting.
 
 ---
 
 ## 🌟 Key Features
 
-1. **Explicit 7-Agent Orchestration (LangGraph)**:
+1. **Agent Orchestration (LangGraph)**:
    - **JD Agent**: Structured Job Description extraction using Pydantic schemas.
    - **Resume Agent**: Automated structured profile parsing from PDF/DOCX resumes.
    - **Matching Agent**: Hybrid semantic + rule-based scoring producing **Explainable AI (XAI)** sub-scores, skill match matrices, and reasoning text.
-   - **Bias Audit Agent**: Demographic-blind re-scoring & 80% rule (4/5ths) Disparate Impact audit.
-   - **Executive Report Agent**: Synthesizes candidate batch metrics into an AI Executive Hiring Report.
-   - **Email Draft Agent**: Generates skills-grounded selection/rejection email drafts with recruiter review & approval before sending.
-   - **Candidate Chat Agent**: RAG search over FAISS resume chunks with chunk citations.
+   - **Analysis Agent (Bias Audit & Executive Report)**: Demographic-blind re-scoring, 80% rule (4/5ths) Disparate Impact audit, and AI Executive Hiring Reports.
+   - **Communication Agent (RAG Chat & Email Drafts)**: RAG search over FAISS resume chunks with chunk citations, and skills-grounded selection/rejection draft emails requiring recruiter review before sending via SMTP.
 
-2. **Hardened LLM Infrastructure**:
+2. **Modular Prompt Management**:
+   - Prompt templates decoupled from Python code in `backend/app/prompts/` (`jd_prompt.txt`, `resume_prompt.txt`, `matching_prompt.txt`, `chat_prompt.txt`, `report_prompt.txt`, `email_prompt.txt`, `bias_prompt.txt`).
+
+3. **Hardened LLM Infrastructure**:
    - Powered by **Gemini 2.5 Flash** with automatic fallback to **Groq (`llama-3.3-70b-versatile`)**.
-   - Structured JSON output parsing (`.with_structured_output()`) and exponential backoff retries for 429 rate limit errors.
+   - Native Pydantic structured output (`.with_structured_output()`) and exponential backoff retries for 429 rate limit errors.
 
-3. **Modern Decoupled Full-Stack Architecture**:
+4. **Modern Decoupled Full-Stack Architecture**:
    - **Backend**: FastAPI RESTful API with async SQLAlchemy SQLite ORM & FAISS vector storage.
-   - **Frontend**: Next.js 14 (App Router) + TypeScript + Tailwind CSS with dark mode, glassmorphism aesthetics, radar charts, and interactive modals.
+   - **Frontend**: Next.js 14 (App Router) + TypeScript + Tailwind CSS with dark mode, glassmorphism aesthetics, radar charts, and interactive review modals.
 
 ---
 
 ## 🏗️ System Architecture
 
 ```
-                               ┌─────────────────────────────────────────┐
-                               │       Next.js 14 Frontend UI             │
-                               │  Jobs | Upload | Leaderboard | Chat |   │
-                               │  Bias Audit | Executive Report | Emails │
-                               └────────────────────┬────────────────────┘
-                                                    │ REST API
-                               ┌────────────────────▼────────────────────┐
-                               │           FastAPI Backend               │
-                               └────────────────────┬────────────────────┘
-                                                    │
-             ┌──────────────────────────────────────┼──────────────────────────────────────┐
-             │                                      │                                      │
-┌────────────▼─────────────┐             ┌──────────▼──────────┐              ┌────────────▼─────────────┐
-│  LangGraph Agent Router  │             │   SQLite Database   │              │  FAISS Vector Index      │
-│  (Multi-Agent Pipeline)  │             │   Jobs, Candidates, │              │  (Resume Chunks &        │
-└────────────┬─────────────┘             │   Matches, Reports, │              │   Embeddings)            │
-             │                           │   Drafts, Chat Logs │              └──────────────────────────┘
-             ├──────────────────────────────────────┴──────────────────────────────────────┐
-             │                                                                             │
- ┌───────────┴───────────┐ ┌──────────────────────┐ ┌──────────────────────┐ ┌───────────────┴──────────────┐
- │ 1. JD Agent           │ │ 2. Resume Agent      │ │ 3. Matching Agent    │ │ 4. Bias Audit Agent          │
- │ Structured JD extract │ │ Structured candidate │ │ Semantic + hybrid    │ │ Demographic-blind transform  │
- │ (Gemini 2.5 Flash)    │ │ profile parsing      │ │ scoring + XAI output │ │ + disparate impact metrics   │
- └───────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────────────┘
- ┌───────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
- │ 5. Executive Report   │ │ 6. Email Draft Agent │ │ 7. Candidate Chat    │
- │ Summarizes candidate  │ │ Skills-grounded,     │ │ RAG over FAISS       │
- │ batch for HR leads    │ │ human-in-loop drafts │ │ chunks + citations   │
- └───────────────────────┘ └──────────────────────┘ └──────────────────────┘
+                 ┌─────────────────────────────┐
+                 │       Next.js Frontend      │
+                 │                             │
+                 │ Jobs | Upload | Results     │
+                 │ Candidate | Reports | Chat  │
+                 └──────────────┬──────────────┘
+                                │ REST API (/api/v1/)
+                                ▼
+                 ┌─────────────────────────────┐
+                 │       FastAPI Backend       │
+                 └──────────────┬──────────────┘
+                                │
+                 ┌──────────────┼──────────────┐
+                 ▼              ▼              ▼
+             SQLite          FAISS        LangGraph
+             Database      Vector Store     Agents
+                                │              │
+                                │              ├── JD Agent
+                                │              ├── Resume Agent
+                                │              ├── Matching Agent
+                                │              ├── Analysis Agent
+                                │              └── Communication Agent
+                                │
+                                ▼
+                        Gemini 2.5 Flash
+                                │
+                           Groq Fallback
 ```
 
 ---
@@ -105,7 +104,10 @@ npm run dev
 
 ---
 
-## 🧪 Running Unit Tests
+## 🧪 Running Automated Tests
+
+Run unit & integration tests:
+
 ```bash
 python -m pytest backend/tests/
 ```
@@ -113,24 +115,35 @@ python -m pytest backend/tests/
 ---
 
 ## 📂 Project Structure
+
 ```
 SmartHire/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/            # LangGraph multi-agent pipeline nodes
-│   │   ├── api/routers/       # FastAPI REST API endpoints
+│   │   ├── api/routers/       # FastAPI REST API endpoints (/api/v1/)
 │   │   ├── db/                # SQLite database models & session setup
+│   │   ├── prompts/           # External prompt template files (.txt)
 │   │   ├── schemas/           # Pydantic data schemas
 │   │   ├── services/          # Embeddings, FAISS vector store, scoring, bias audit
 │   │   └── main.py            # FastAPI application entrypoint
-│   ├── tests/                 # Unit tests for scoring & bias audit
+│   ├── tests/                 # Unit & integration test suites
 │   └── requirements.txt
 ├── frontend/
 │   ├── app/                   # Next.js 14 App Router screens
 │   ├── components/            # UI Modals, Radar charts, Chat widgets
 │   ├── package.json
 │   └── tailwind.config.js
-├── legacy/                    # Archived Streamlit initial prototype
 ├── README.md
 └── SmartHire new plan.md
 ```
+
+---
+
+## 💡 Resume Positioning Highlights
+
+- **Architected an AI recruitment platform using LangGraph, Gemini 2.5 Flash, FastAPI, and Next.js, orchestrating specialized agents for structured job/resume extraction, hybrid candidate matching, and recruitment analysis.**
+- **Built an explainable hybrid matching pipeline combining semantic embeddings with deterministic scoring to rank candidates while surfacing matched skills, missing skills, and evidence-based reasoning.**
+- **Implemented RAG-based candidate chat using FAISS and sentence-transformer embeddings, enabling recruiters to query resumes in natural language with responses grounded in retrieved resume sections.**
+- **Developed a responsible-AI fairness audit using demographic-blind re-scoring and disparate-impact analysis to identify potential bias in automated candidate ranking.**
+- **Implemented human-in-the-loop AI workflows for executive hiring reports and personalized candidate communication, requiring recruiter review before email delivery.**

@@ -6,6 +6,7 @@ from typing import Dict, Any
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.services.llm_factory import get_llm
+from backend.app.prompts.prompt_loader import load_prompt_template
 import logging
 
 logger = logging.getLogger("smarthire.agents.email_agent")
@@ -14,14 +15,13 @@ class EmailDraftContent(BaseModel):
     subject: str = Field(description="Professional email subject line")
     body: str = Field(description="Constructive, skills-grounded email body text")
 
+system_prompt_text = load_prompt_template(
+    "email_prompt.txt",
+    "You are an empathetic, professional AI recruiter assistant. Generate a personalized candidate notification email ({email_type}: selection or rejection)."
+)
+
 EMAIL_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are an empathetic, professional AI recruiter assistant. 
-Generate a personalized candidate notification email ({email_type}: selection or rejection).
-Rules:
-1. Rejection emails MUST be constructive and grounded strictly in explicit missing skills ({missing_skills}) or target qualifications. Never use generic 'not selected' templates. Frame missing skills as clear areas for professional growth.
-2. Selection emails MUST highlight specific matched candidate strengths ({matched_skills}).
-3. ABSOLUTELY NEVER reference demographic signals, age, gender, pronouns, or university prestige markers. Focus strictly on job skills.
-4. Keep the tone warm, professional, and encouraging."""),
+    ("system", system_prompt_text),
     ("user", "Candidate Name: {candidate_name}\nJob Title: {job_title}\nMatch Score: {final_score}\nMatched Skills: {matched_skills}\nMissing Skills: {missing_skills}\nReasoning: {reasoning}")
 ])
 

@@ -36,7 +36,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount Router Endpoints
+# Mount Router Endpoints under /api/v1 and /api compatibility
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(candidates.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
+app.include_router(reports.router, prefix="/api/v1")
+app.include_router(emails.router, prefix="/api/v1")
+
+# Standard compatibility mounts
 app.include_router(jobs.router)
 app.include_router(candidates.router)
 app.include_router(audit.router)

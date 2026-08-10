@@ -2,12 +2,18 @@ from typing import Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.job import JobDescription
 from backend.app.services.llm_factory import get_llm
+from backend.app.prompts.prompt_loader import load_prompt_template
 import logging
 
 logger = logging.getLogger("smarthire.agents.jd_agent")
 
+system_prompt_text = load_prompt_template(
+    "jd_prompt.txt",
+    "You are an expert HR AI parsing assistant. Analyze the raw Job Description text provided and extract a structured JobDescription JSON object."
+)
+
 JD_PARSER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert HR AI parsing assistant. Analyze the raw Job Description text provided and extract a structured JobDescription JSON object. Be concise, accurate, and extract explicit skills, experience years required, and key responsibilities."),
+    ("system", system_prompt_text),
     ("user", "Job Description Raw Text:\n\n{raw_jd}")
 ])
 

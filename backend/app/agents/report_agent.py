@@ -3,12 +3,18 @@ from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.job import JobDescription
 from backend.app.schemas.report import ExecutiveReportSchema
 from backend.app.services.llm_factory import get_llm
+from backend.app.prompts.prompt_loader import load_prompt_template
 import logging
 
 logger = logging.getLogger("smarthire.agents.report_agent")
 
+system_prompt_text = load_prompt_template(
+    "report_prompt.txt",
+    "You are an executive HR AI analyst. Synthesize the candidate batch evaluation results into an Executive Hiring Report."
+)
+
 REPORT_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", "You are an executive HR AI analyst. Synthesize the candidate batch evaluation results into an Executive Hiring Report. Provide a high-level summary, key talent pool strengths, skill gaps, and concrete hiring/interview recommendations."),
+    ("system", system_prompt_text),
     ("user", "Job Title: {job_title}\n\nJob Description Requirements:\n{jd_summary}\n\nCandidate Match Results:\n{candidate_summaries}")
 ])
 

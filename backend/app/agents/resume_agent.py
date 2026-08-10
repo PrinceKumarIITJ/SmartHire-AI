@@ -1,12 +1,18 @@
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.candidate import CandidateProfile
 from backend.app.services.llm_factory import get_llm
+from backend.app.prompts.prompt_loader import load_prompt_template
 import logging
 
 logger = logging.getLogger("smarthire.agents.resume_agent")
 
+system_prompt_text = load_prompt_template(
+    "resume_prompt.txt",
+    "You are an expert HR AI Resume Parsing Assistant. Analyze the raw candidate resume text and extract a structured CandidateProfile JSON object."
+)
+
 RESUME_PARSER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert HR AI Resume Parsing Assistant. Analyze the raw candidate resume text and extract a structured CandidateProfile JSON object. Extract candidate name, contact info, explicit technical skills, work experience details, total experience years, projects, education, and certifications accurately."),
+    ("system", system_prompt_text),
     ("user", "Resume Raw Text:\n\n{raw_resume_text}")
 ])
 

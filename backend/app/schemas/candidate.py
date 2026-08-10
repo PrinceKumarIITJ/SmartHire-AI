@@ -23,6 +23,7 @@ class CandidateProfile(BaseModel):
     name: str = Field(default="Unknown Candidate", description="Candidate's full name")
     email: str = Field(default="", description="Candidate's email address")
     phone: str = Field(default="", description="Candidate's phone number")
+    filename: str = Field(default="", description="Original resume filename")
     skills: List[str] = Field(default_factory=list, description="List of technical and soft skills")
     projects: List[ProjectExperience] = Field(default_factory=list, description="Projects undertaken")
     work_experience: List[WorkExperience] = Field(default_factory=list, description="Work experience list")

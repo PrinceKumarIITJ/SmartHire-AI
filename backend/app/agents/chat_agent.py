@@ -2,15 +2,18 @@ from typing import Dict, Any, List
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.services.vector_store import faiss_store
 from backend.app.services.llm_factory import get_llm
+from backend.app.prompts.prompt_loader import load_prompt_template
 import logging
 
 logger = logging.getLogger("smarthire.agents.chat_agent")
 
+system_prompt_text = load_prompt_template(
+    "chat_prompt.txt",
+    "You are SmartHire Assistant, an AI recruitment intelligence chatbot. Answer the recruiter's question about candidate '{candidate_name}' strictly based on the provided resume context chunks."
+)
+
 CHAT_RAG_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are SmartHire Assistant, an AI recruitment intelligence chatbot.
-Answer the recruiter's question about candidate '{candidate_name}' strictly based on the provided resume context chunks.
-If the context does not contain sufficient details to answer, state clearly that the resume does not specify that information.
-Always cite specific sections/chunks in your answer."""),
+    ("system", system_prompt_text),
     ("user", "Retrieved Resume Context Chunks:\n{context_chunks}\n\nRecruiter Question:\n{user_question}")
 ])
 

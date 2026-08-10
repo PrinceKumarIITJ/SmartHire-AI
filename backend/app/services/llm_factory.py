@@ -3,14 +3,8 @@ import logging
 from typing import Optional, Any
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger("smarthire.llm_factory")
-
-def is_retryable_exception(e: Exception) -> bool:
-    """Retry on rate limits (429), timeouts, and 5xx service errors."""
-    err_str = str(e).lower()
-    return "429" in err_str or "quota" in err_str or "rate limit" in err_str or "500" in err_str or "503" in err_str or "timeout" in err_str
 
 def get_llm(
     provider: Optional[str] = None,
@@ -18,48 +12,55 @@ def get_llm(
     temperature: float = 0.1
 ) -> Any:
     """
-    Factory creating LLM instances with Gemini 2.5 Flash as default primary model
-    and automatic fallback to Groq. Retries on 429 rate limit or 5xx errors.
+    Factory creating LLM instances with primary provider (Gemini 2.0 Flash)
+    and automatic fallback chain to Groq (llama-3.3-70b-versatile) on rate limits (429) or quota errors.
     """
     primary_provider = (provider or os.getenv("LLM_PROVIDER", "gemini")).lower()
     
-    @retry(
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception(is_retryable_exception),
-        reraise=True
-    )
-    def _create_llm_instance(prov: str):
-        if prov == "groq":
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
-                raise ValueError("GROQ_API_KEY environment variable missing.")
-            groq_model = model or os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
-            logger.info(f"Initializing Groq LLM with model {groq_model}")
-            return ChatGroq(
-                model=groq_model,
-                temperature=temperature,
-                api_key=api_key
-            )
-        else: # Gemini primary
-            api_key = os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                raise ValueError("GOOGLE_API_KEY environment variable missing.")
-            gemini_model = model or os.getenv("LLM_MODEL_NAME", "gemini-2.5-flash")
-            logger.info(f"Initializing Gemini LLM with model {gemini_model}")
-            return ChatGoogleGenerativeAI(
+    primary_llm = None
+    fallback_llm = None
+
+    # Initialize Gemini primary model if GOOGLE_API_KEY present
+    google_key = os.getenv("GOOGLE_API_KEY")
+    if google_key:
+        gemini_model = model or os.getenv("LLM_MODEL_NAME", "gemini-2.0-flash")
+        try:
+            primary_llm = ChatGoogleGenerativeAI(
                 model=gemini_model,
                 temperature=temperature,
-                google_api_key=api_key
+                google_api_key=google_key
             )
+        except Exception as e:
+            logger.warning(f"Could not initialize ChatGoogleGenerativeAI: {e}")
 
-    try:
-        return _create_llm_instance(primary_provider)
-    except Exception as exc:
-        fallback_provider = "groq" if primary_provider == "gemini" else "gemini"
-        logger.warning(f"Primary provider '{primary_provider}' failed with error: {exc}. Attempting fallback to '{fallback_provider}'.")
+    # Initialize Groq fallback model if GROQ_API_KEY present
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        groq_model = os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile")
         try:
-            return _create_llm_instance(fallback_provider)
-        except Exception as fallback_exc:
-            logger.error(f"Fallback provider '{fallback_provider}' also failed: {fallback_exc}")
-            raise fallback_exc
+            fallback_llm = ChatGroq(
+                model=groq_model,
+                temperature=temperature,
+                api_key=groq_key
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize ChatGroq: {e}")
+
+    if primary_provider == "groq":
+        if fallback_llm and primary_llm:
+            logger.info("Using Groq as primary LLM with Gemini fallback.")
+            return fallback_llm.with_fallbacks([primary_llm])
+        elif fallback_llm:
+            return fallback_llm
+        elif primary_llm:
+            return primary_llm
+    else: # Default Gemini primary
+        if primary_llm and fallback_llm:
+            logger.info("Using Gemini as primary LLM with Groq fallback.")
+            return primary_llm.with_fallbacks([fallback_llm])
+        elif primary_llm:
+            return primary_llm
+        elif fallback_llm:
+            return fallback_llm
+
+    raise ValueError("No valid LLM provider configured. Please check GOOGLE_API_KEY or GROQ_API_KEY in .env.")
