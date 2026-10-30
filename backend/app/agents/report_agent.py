@@ -1,9 +1,11 @@
+import asyncio
 from typing import List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.job import JobDescription
 from backend.app.schemas.report import ExecutiveReportSchema
 from backend.app.services.llm_factory import get_llm
 from backend.app.prompts.prompt_loader import load_prompt_template
+from backend.app.services.tracing import traced_agent
 import logging
 
 logger = logging.getLogger("smarthire.agents.report_agent")
@@ -18,6 +20,7 @@ REPORT_PROMPT = ChatPromptTemplate.from_messages([
     ("user", "Job Title: {job_title}\n\nJob Description Requirements:\n{jd_summary}\n\nCandidate Match Results:\n{candidate_summaries}")
 ])
 
+@traced_agent("report_agent")
 async def run_report_agent(
     job: JobDescription,
     matches: List[Dict[str, Any]]
@@ -51,7 +54,7 @@ async def run_report_agent(
         return res
     except Exception as e:
         logger.warning(f"Async LLM call failed in Report Agent: {e}. Trying sync invoke...")
-        res = chain.invoke({
+        res = await asyncio.to_thread(chain.invoke, {
             "job_title": job.title,
             "jd_summary": jd_summary,
             "candidate_summaries": candidate_summaries

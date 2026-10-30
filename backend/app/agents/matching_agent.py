@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any
 from backend.app.schemas.job import JobDescription
 from backend.app.schemas.candidate import CandidateProfile
@@ -20,12 +21,14 @@ async def run_matching_agent(
     logger.info(f"Executing Matching Agent for candidate '{candidate_profile.name}' ({candidate_id})...")
 
     # Index resume chunks in FAISS for candidate RAG chat
-    faiss_store.add_candidate_chunks(
+    # Embedding and scoring are CPU-bound; keep them off the event loop.
+    await asyncio.to_thread(
+        faiss_store.add_candidate_chunks,
         candidate_id=candidate_id,
         candidate_name=candidate_profile.name,
         text=raw_resume_text
     )
 
     # Compute Explainable AI Score Breakdown
-    match_data = compute_explainable_match(candidate_profile, job_description)
+    match_data = await asyncio.to_thread(compute_explainable_match, candidate_profile, job_description)
     return match_data

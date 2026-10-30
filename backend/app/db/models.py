@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Float, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Float, Integer, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from backend.app.db.database import Base
 
@@ -14,6 +14,10 @@ class Job(Base):
     title = Column(String, nullable=False)
     raw_jd = Column(Text, nullable=False)
     parsed_jd = Column(JSON, nullable=True)  # Structured JobDescription dictionary
+    department = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    employment_type = Column(String, nullable=True)  # 'Full-time', 'Contract', ...
+    status = Column(String, default="open")  # 'open', 'paused', 'closed'
     created_at = Column(DateTime, default=datetime.utcnow)
 
     candidates = relationship("Candidate", back_populates="job", cascade="all, delete-orphan")
@@ -31,6 +35,7 @@ class Candidate(Base):
     filename = Column(String, nullable=False)
     raw_resume_text = Column(Text, nullable=False)
     parsed_profile = Column(JSON, nullable=True)  # Structured CandidateProfile dictionary
+    integrity_report = Column(JSON, nullable=True)  # Guardrail findings (hidden text, prompt injection, stuffing)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     job = relationship("Job", back_populates="candidates")
@@ -58,8 +63,10 @@ class JobCandidateMatch(Base):
     matched_skills = Column(JSON, default=list)
     missing_skills = Column(JSON, default=list)
     reasoning = Column(Text, default="")
-    status = Column(String, default="Pending")  # 'Shortlisted', 'Rejected', 'Pending'
-    
+    status = Column(String, default="Pending")  # 'Shortlisted', 'Interview', 'Rejected', 'Pending'
+    notes = Column(Text, default="")  # Recruiter notes (human-in-the-loop)
+    status_source = Column(String, default="ai")  # 'ai' or 'recruiter'; recruiter decisions survive re-runs
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     job = relationship("Job", back_populates="matches")
@@ -119,3 +126,33 @@ class AuditReport(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     job = relationship("Job", back_populates="audit_reports")
+
+
+class LlmTrace(Base):
+    """One row per chat-model call (LLMOps observability)."""
+    __tablename__ = "llm_traces"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    agent = Column(String, index=True, default="unknown")
+    job_id = Column(String, nullable=True, index=True)
+    provider = Column(String, default="")
+    model = Column(String, default="")
+    status = Column(String, default="ok")  # 'ok' | 'error'
+    latency_ms = Column(Integer, default=0)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class EvalRun(Base):
+    """Offline evaluation of ranking quality and guardrail accuracy against a golden set."""
+    __tablename__ = "eval_runs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    status = Column(String, default="running")  # 'running' | 'completed' | 'failed'
+    metrics = Column(JSON, default=dict)
+    details = Column(JSON, default=list)
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)

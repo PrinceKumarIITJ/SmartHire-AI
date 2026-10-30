@@ -1,8 +1,10 @@
+import asyncio
 from typing import Dict, Any, List
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.services.vector_store import faiss_store
 from backend.app.services.llm_factory import get_llm
 from backend.app.prompts.prompt_loader import load_prompt_template
+from backend.app.services.tracing import traced_agent
 import logging
 
 logger = logging.getLogger("smarthire.agents.chat_agent")
@@ -17,6 +19,7 @@ CHAT_RAG_PROMPT = ChatPromptTemplate.from_messages([
     ("user", "Retrieved Resume Context Chunks:\n{context_chunks}\n\nRecruiter Question:\n{user_question}")
 ])
 
+@traced_agent("chat_agent")
 async def run_chat_agent(
     candidate_id: str,
     candidate_name: str,
@@ -28,7 +31,8 @@ async def run_chat_agent(
     logger.info(f"Executing Chat Agent for candidate {candidate_name} ({candidate_id})...")
 
     # Retrieve top-k chunks from FAISS
-    chunks_with_scores = faiss_store.similarity_search_candidate(
+    chunks_with_scores = await asyncio.to_thread(
+        faiss_store.similarity_search_candidate,
         candidate_id=candidate_id,
         query=user_question,
         top_k=4
@@ -59,7 +63,7 @@ async def run_chat_agent(
         answer_text = res.content
     except Exception as e:
         logger.warning(f"Async LLM call failed in Chat Agent: {e}. Trying sync invoke...")
-        res = chain.invoke(input_vars)
+        res = await asyncio.to_thread(chain.invoke, input_vars)
         answer_text = res.content
 
     return {

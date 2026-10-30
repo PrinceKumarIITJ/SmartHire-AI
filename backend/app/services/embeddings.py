@@ -1,3 +1,5 @@
+import os
+import threading
 from typing import List
 from sentence_transformers import SentenceTransformer
 import logging
@@ -5,12 +7,18 @@ import logging
 logger = logging.getLogger("smarthire.embeddings")
 
 _embedding_model = None
+# Encodes run in worker threads (asyncio.to_thread), so guard the one-time load.
+_load_lock = threading.Lock()
 
 def get_embedding_model() -> SentenceTransformer:
     global _embedding_model
     if _embedding_model is None:
-        logger.info("Loading sentence-transformers/all-MiniLM-L6-v2 embedding model...")
-        _embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        with _load_lock:
+            if _embedding_model is None:
+                # e.g. "cpu" or "cuda"; unset lets sentence-transformers pick automatically.
+                device = os.getenv("EMBEDDING_DEVICE") or None
+                logger.info(f"Loading sentence-transformers/all-MiniLM-L6-v2 embedding model (device={device or 'auto'})...")
+                _embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
     return _embedding_model
 
 def get_embedding(text: str) -> List[float]:

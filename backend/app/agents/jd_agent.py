@@ -1,8 +1,10 @@
+import asyncio
 from typing import Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.job import JobDescription
 from backend.app.services.llm_factory import get_llm
 from backend.app.prompts.prompt_loader import load_prompt_template
+from backend.app.services.tracing import traced_agent
 import logging
 
 logger = logging.getLogger("smarthire.agents.jd_agent")
@@ -17,6 +19,7 @@ JD_PARSER_PROMPT = ChatPromptTemplate.from_messages([
     ("user", "Job Description Raw Text:\n\n{raw_jd}")
 ])
 
+@traced_agent("jd_agent")
 async def run_jd_agent(raw_jd: str) -> JobDescription:
     """
     JD Agent: Parses raw job description into structured Pydantic JobDescription model
@@ -32,5 +35,5 @@ async def run_jd_agent(raw_jd: str) -> JobDescription:
         return result
     except Exception as e:
         logger.warning(f"Async LLM call failed in JD Agent: {e}. Falling back to sync call...")
-        result = chain.invoke({"raw_jd": raw_jd})
+        result = await asyncio.to_thread(chain.invoke, {"raw_jd": raw_jd})
         return result

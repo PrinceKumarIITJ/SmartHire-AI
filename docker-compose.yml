@@ -1,0 +1,31 @@
+# Full SmartHire stack:  docker compose up --build
+# Web: http://localhost:3000   API docs: http://localhost:8000/docs
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    environment:
+      CORS_ORIGINS: http://localhost:3000
+      ENVIRONMENT: production
+    ports:
+      - "8000:8000"
+    volumes:
+      - smarthire-data:/app/data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  smarthire-data:

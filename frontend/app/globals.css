@@ -2,74 +2,150 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
+/* ---------------------------------------------------------------------------
+   SmartHire "Aurora" design tokens — RGB channels so Tailwind can apply alpha.
+   Light is the base; dark is applied via [data-theme="dark"] (set before paint
+   by the inline script in app/layout.tsx).
+--------------------------------------------------------------------------- */
 :root {
-  --font-heading: 'Outfit', sans-serif;
-  --font-body: 'Plus Jakarta Sans', sans-serif;
+  color-scheme: light;
+  --canvas: 246 247 252;
+  --surface: 255 255 255;
+  --elevated: 241 242 249;
+  --line: 225 227 239;
+  --ink: 13 15 30;
+  --ink-muted: 78 84 112;
+  --ink-subtle: 128 134 160;
+  --brand: 98 71 230;
+  --brand-strong: 79 54 210;
+  --brand-soft: 109 84 235;
+  --brand-fg: 255 255 255;
+  --aqua: 8 145 178;
+  --success: 4 150 105;
+  --warning: 190 116 0;
+  --danger: 218 38 82;
+  --info: 37 99 235;
+
+  /* Data-viz series (validated: ALL CHECKS PASS on light surface) */
+  --viz-1: #5b47d6;
+  --viz-2: #eb6834;
+  --viz-grid: #e7e8f0;
+
+  --aurora-a: 124 92 255;
+  --aurora-b: 34 211 238;
+  --aurora-c: 236 72 153;
 }
 
-body {
-  font-family: var(--font-body);
-  background-color: #0b0d14;
-  color: #f3f4f6;
-  min-height: 100vh;
-  overflow-x: hidden;
+[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: 7 8 16;
+  --surface: 14 16 32;
+  --elevated: 22 25 46;
+  --line: 37 41 70;
+  --ink: 236 238 250;
+  --ink-muted: 160 166 198;
+  --ink-subtle: 106 112 146;
+  --brand: 124 92 255;
+  --brand-strong: 108 76 245;
+  --brand-soft: 172 150 255;
+  --brand-fg: 255 255 255;
+  --aqua: 34 211 238;
+  --success: 46 213 150;
+  --warning: 255 181 71;
+  --danger: 255 92 122;
+  --info: 96 165 250;
+
+  /* Data-viz series (validated: ALL CHECKS PASS on dark surface #0f1122) */
+  --viz-1: #9085e9;
+  --viz-2: #d95926;
+  --viz-grid: #23263f;
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-heading);
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+
+  ::selection {
+    background: rgb(var(--brand) / 0.25);
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--brand));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--line));
+    border-radius: 999px;
+    border: 3px solid rgb(var(--canvas));
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(var(--ink-subtle) / 0.6); }
 }
 
-.glass-panel {
-  background: rgba(22, 25, 38, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line/80 bg-surface shadow-card;
+  }
+
+  .card-hover {
+    @apply transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-lift;
+  }
+
+  .text-gradient {
+    background: linear-gradient(110deg, rgb(var(--aurora-a)) 0%, rgb(var(--aurora-b)) 55%, rgb(var(--aurora-a)) 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .bg-brand-gradient {
+    background-image: linear-gradient(135deg, rgb(var(--aurora-a)) 0%, rgb(var(--brand-strong)) 45%, rgb(var(--aurora-b)) 130%);
+  }
+
+  .grid-backdrop {
+    background-image:
+      linear-gradient(rgb(var(--line) / 0.55) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--line) / 0.55) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black 30%, transparent 75%);
+  }
+
+  .noise {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.035'/></svg>");
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-subtle
+      transition-colors focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/15;
+  }
+
+  .kbd {
+    @apply inline-flex h-5 min-w-[20px] items-center justify-center rounded-md border border-line bg-elevated px-1.5 font-mono text-[10px] font-medium text-ink-muted;
+  }
 }
 
-.glass-card {
-  background: rgba(30, 34, 53, 0.6);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.glass-card:hover {
-  border-color: rgba(99, 102, 241, 0.4);
-  transform: translateY(-2px);
-  box-shadow: 0 12px 24px -10px rgba(99, 102, 241, 0.25);
-}
-
-.gradient-text {
-  background: linear-gradient(135deg, #818cf8 0%, #c084fc 50%, #f472b6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.gradient-border {
-  position: relative;
-  border-radius: 0.75rem;
-  background: linear-gradient(135deg, rgba(99,102,241,0.3), rgba(236,72,153,0.3));
-  padding: 1px;
-}
-
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: #0b0d14;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #1f2438;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #374151;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

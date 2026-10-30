@@ -1,7 +1,9 @@
+import asyncio
 from langchain_core.prompts import ChatPromptTemplate
 from backend.app.schemas.candidate import CandidateProfile
 from backend.app.services.llm_factory import get_llm
 from backend.app.prompts.prompt_loader import load_prompt_template
+from backend.app.services.tracing import traced_agent
 import logging
 
 logger = logging.getLogger("smarthire.agents.resume_agent")
@@ -16,6 +18,7 @@ RESUME_PARSER_PROMPT = ChatPromptTemplate.from_messages([
     ("user", "Resume Raw Text:\n\n{raw_resume_text}")
 ])
 
+@traced_agent("resume_agent")
 async def run_resume_agent(raw_resume_text: str) -> CandidateProfile:
     """
     Resume Agent: Parses raw resume text into a structured Pydantic CandidateProfile
@@ -31,5 +34,5 @@ async def run_resume_agent(raw_resume_text: str) -> CandidateProfile:
         return result
     except Exception as e:
         logger.warning(f"Async LLM call failed in Resume Agent: {e}. Falling back to sync invoke...")
-        result = chain.invoke({"raw_resume_text": raw_resume_text})
+        result = await asyncio.to_thread(chain.invoke, {"raw_resume_text": raw_resume_text})
         return result

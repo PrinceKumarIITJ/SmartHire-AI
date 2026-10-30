@@ -1,5 +1,8 @@
+import os
+import re
 from typing import Dict, Any, List, Tuple
 import numpy as np
+from backend.app.core.config import get_settings
 from backend.app.services.embeddings import get_embedding
 from backend.app.schemas.job import JobDescription
 from backend.app.schemas.candidate import CandidateProfile
@@ -16,34 +19,67 @@ def calculate_cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
 
+# Raw MiniLM cosine between a JD and a resume rarely leaves ~0.1–0.6, which compressed every
+# candidate's score. Rescale that band to 0–1 (bounds found from evaluation runs).
+SEMANTIC_LOW = float(os.getenv("SEMANTIC_SIM_LOW", "0.15"))
+SEMANTIC_HIGH = float(os.getenv("SEMANTIC_SIM_HIGH", "0.60"))
+
+
+def calibrate_semantic(cosine: float) -> float:
+    return min(1.0, max(0.0, (cosine - SEMANTIC_LOW) / (SEMANTIC_HIGH - SEMANTIC_LOW)))
+
+
+def skill_alternatives(skill: str) -> List[str]:
+    """
+    Expand compound JD skills into alternatives that each satisfy the requirement:
+    "Vector databases (FAISS, pgvector)" -> ["vector databases", "faiss", "pgvector"],
+    "AWS or GCP" -> ["aws", "gcp"].
+    """
+    s = skill.strip().lower()
+    inner = re.findall(r"\(([^)]*)\)", s)
+    head = re.sub(r"\([^)]*\)", " ", s)
+    parts = re.split(r"\s+or\s+|/|,|;", head) + [p for grp in inner for p in re.split(r"\s+or\s+|/|,|;", grp)]
+    alts = [re.sub(r"\s+", " ", p).strip(" .-") for p in parts]
+    return [a for a in dict.fromkeys(alts) if a] or [s]
+
+
+def _skill_present(alternatives: List[str], candidate_skills: set) -> bool:
+    for alt in alternatives:
+        for cs in candidate_skills:
+            if alt == cs:
+                return True
+            # Substring matching only for 3+ chars, so "go" or "r" don't match "django" / "react".
+            if len(alt) >= 3 and len(cs) >= 3 and (alt in cs or cs in alt):
+                return True
+    return False
+
+
 def calculate_skill_overlap(candidate_skills: List[str], jd_must_have: List[str], jd_preferred: List[str]) -> Tuple[float, List[str], List[str]]:
     c_skills_lower = {s.strip().lower() for s in candidate_skills if s.strip()}
-    must_lower = [s.strip().lower() for s in jd_must_have if s.strip()]
-    pref_lower = [s.strip().lower() for s in jd_preferred if s.strip()]
+    must = [s for s in jd_must_have if s.strip()]
+    pref = [s for s in jd_preferred if s.strip()]
 
     matched = []
     missing = []
 
-    # Check must-have skills
     must_matched_count = 0
-    for orig, s in zip(jd_must_have, must_lower):
-        if any(s in cs or cs in s for cs in c_skills_lower):
+    for orig in must:
+        if _skill_present(skill_alternatives(orig), c_skills_lower):
             must_matched_count += 1
             matched.append(orig)
         else:
             missing.append(orig)
 
-    # Check preferred skills
     pref_matched_count = 0
-    for orig, s in zip(jd_preferred, pref_lower):
-        if any(s in cs or cs in s for cs in c_skills_lower):
+    for orig in pref:
+        if _skill_present(skill_alternatives(orig), c_skills_lower):
             pref_matched_count += 1
             matched.append(orig)
         else:
             missing.append(orig)
 
-    total_must = len(must_lower)
-    total_pref = len(pref_lower)
+    total_must = len(must)
+    total_pref = len(pref)
 
     if total_must + total_pref == 0:
         score = 0.8  # neutral high fallback if JD specified no explicit skills list
@@ -63,24 +99,32 @@ def calculate_experience_score(candidate_years: float, jd_years: float) -> float
     else:
         return max(0.2, ratio * 0.85)
 
+DEGREE_LEVELS = [
+    (3, r"\b(phd|doctorate|doctor of philosophy|dphil)\b"),
+    (2, r"\b(master'?s?|msc|mtech|ms|me|mba|ma|mca|mphil)\b"),
+    (1, r"\b(bachelor'?s?|bsc|btech|be|bs|ba|bca|bdes|bba|undergraduate|degree)\b"),
+]
+
+
+def degree_level(text: str) -> int:
+    """Highest degree level mentioned: 3 = doctorate, 2 = master's, 1 = bachelor's, 0 = none."""
+    norm = re.sub(r"[.’]", "", text.lower())  # "B.Tech" -> "btech", "M.Sc." -> "msc"
+    return next((level for level, pattern in DEGREE_LEVELS if re.search(pattern, norm)), 0)
+
+
 def calculate_education_score(candidate_edu: List[Any], jd_edu_req: str) -> float:
     if not jd_edu_req:
         return 0.85
-    jd_req_lower = jd_edu_req.lower()
-    edu_text = " ".join([f"{e.degree} {e.institution}" for e in candidate_edu]).lower()
-    
-    if "phd" in jd_req_lower and "phd" in edu_text:
+    edu_text = " ".join(f"{e.degree}" for e in candidate_edu)
+    if not edu_text.strip():
+        return 0.4
+    required = degree_level(jd_edu_req) or 1
+    have = degree_level(edu_text)
+    if have >= required:
         return 1.0
-    if "master" in jd_req_lower or "msc" in jd_req_lower or "tech" in jd_req_lower:
-        if any(deg in edu_text for deg in ["master", "msc", "mtech", "ms", "phd"]):
-            return 1.0
-        elif any(deg in edu_text for deg in ["bachelor", "bsc", "btech", "be", "bs"]):
-            return 0.8
-    if "bachelor" in jd_req_lower or "bsc" in jd_req_lower or "btech" in jd_req_lower:
-        if any(deg in edu_text for deg in ["bachelor", "bsc", "btech", "be", "bs", "master", "msc", "mtech", "ms", "phd"]):
-            return 1.0
-
-    return 0.7 if edu_text.strip() else 0.4
+    if have == required - 1:
+        return 0.75
+    return 0.55
 
 def calculate_project_score(projects: List[Any], role_keywords: List[str]) -> float:
     if not projects:
@@ -111,7 +155,7 @@ def compute_explainable_match(
     # 1. Semantic Similarity
     jd_vec = get_embedding(f"{jd.title} {' '.join(jd.must_have_skills)} {' '.join(jd.role_keywords)} {jd.education}")
     cand_vec = get_embedding(f"{candidate.name} {' '.join(candidate.skills)} {' '.join([w.description for w in candidate.work_experience])}")
-    semantic_score = calculate_cosine_similarity(jd_vec, cand_vec)
+    semantic_score = calibrate_semantic(calculate_cosine_similarity(jd_vec, cand_vec))
 
     # 2. Skill Score & Skill Matrices
     skill_score, matched_skills, missing_skills = calculate_skill_overlap(
@@ -162,7 +206,7 @@ def compute_explainable_match(
 
     reasoning = " ".join(reasoning_parts) or "Moderate match across general role competencies."
 
-    status = "Shortlisted" if final_score >= 0.70 else "Rejected"
+    status = "Shortlisted" if final_score >= get_settings().shortlist_threshold else "Rejected"
 
     return {
         "semantic_score": round(semantic_score, 3),

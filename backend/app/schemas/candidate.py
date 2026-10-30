@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 class ProjectExperience(BaseModel):
@@ -37,7 +37,35 @@ class CandidateResponse(BaseModel):
     filename: str
     raw_resume_text: str
     parsed_profile: Optional[CandidateProfile] = None
+    integrity_report: Optional[Dict[str, Any]] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+class TalentPoolItem(BaseModel):
+    candidate_id: str
+    job_id: str
+    job_title: str
+    name: str
+    email: str = ""
+    filename: str
+    skills: List[str] = Field(default_factory=list)
+    total_experience_years: float = 0.0
+    final_score: Optional[float] = None
+    status: str = "Unprocessed"
+    integrity_risk: str = "low"
+    created_at: datetime
+
+class ChatMessage(BaseModel):
+    role: str
+    message: str
+    created_at: datetime
+
+class InterviewQuestion(BaseModel):
+    question: str = Field(description="The interview question to ask")
+    category: str = Field(default="Technical", description="Technical, Behavioral, Gap Probe, or Project Deep-Dive")
+    rationale: str = Field(default="", description="Why this question matters for this candidate")
+
+class InterviewKit(BaseModel):
+    questions: List[InterviewQuestion] = Field(default_factory=list)

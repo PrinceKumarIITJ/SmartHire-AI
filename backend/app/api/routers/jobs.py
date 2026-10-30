@@ -1,211 +1,264 @@
+import asyncio
+import csv
+import io
+import json
+import os
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from backend.app.core.config import get_settings
 from backend.app.db.database import get_db
-from backend.app.db.models import Job, Candidate, JobCandidateMatch, ExecutiveReport, AuditReport, EmailDraft
-from backend.app.schemas.job import JobCreate, JobResponse
+from backend.app.db.cleanup import delete_job_tree
+from backend.app.db.models import Job, Candidate, JobCandidateMatch
+from backend.app.schemas.job import JobCreate, JobUpdate, JobResponse
 from backend.app.schemas.match import MatchResultResponse
+from backend.app.schemas.candidate import TalentPoolItem
 from backend.app.agents.jd_agent import run_jd_agent
-from backend.app.agents.orchestrator import smart_hire_app
+from backend.app.services.pipeline_runner import execute_pipeline, PipelineError
+from backend.app.services.progress import progress_bus
 from backend.app.services.parser import parse_resume_file
+from backend.app.services.integrity import analyze_resume
+from backend.app.services.vector_store import faiss_store
+from backend.app.api.serializers import match_to_response, compute_job_stats, job_to_response, candidate_display, integrity_risk
 import logging
 
 logger = logging.getLogger("smarthire.api.jobs")
-router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
+router = APIRouter(prefix="/jobs", tags=["Jobs"])
+settings = get_settings()
+# Strong references so background pipeline tasks are not garbage-collected mid-run.
+_background_runs: set = set()
 
-@router.post("", response_model=JobResponse)
-async def create_job(payload: JobCreate, db: AsyncSession = Depends(get_db)):
-    """Create a job posting and parse raw JD text with JD Agent."""
-    try:
-        parsed_jd = await run_jd_agent(payload.raw_jd)
-        parsed_dict = parsed_jd.model_dump()
-        
-        job = Job(
-            title=payload.title,
-            raw_jd=payload.raw_jd,
-            parsed_jd=parsed_dict
-        )
-        db.add(job)
-        await db.commit()
-        await db.refresh(job)
-        return job
-    except Exception as e:
-        logger.error(f"Error creating job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("", response_model=List[JobResponse])
-async def list_jobs(db: AsyncSession = Depends(get_db)):
-    """List all created jobs."""
-    result = await db.execute(select(Job).order_by(Job.created_at.desc()))
-    return result.scalars().all()
-
-@router.get("/{job_id}", response_model=JobResponse)
-async def get_job(job_id: str, db: AsyncSession = Depends(get_db)):
-    """Get single job detail."""
+async def _get_job_or_404(db: AsyncSession, job_id: str) -> Job:
     job = await db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
-@router.post("/{job_id}/resumes")
+
+@router.post("", response_model=JobResponse, status_code=201)
+async def create_job(payload: JobCreate, db: AsyncSession = Depends(get_db)):
+    """Create a job posting and parse raw JD text with JD Agent."""
+    try:
+        parsed_jd = await run_jd_agent(payload.raw_jd)
+    except Exception as e:
+        logger.error(f"JD Agent failed while creating job: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="The JD Agent could not parse this description. Check that GOOGLE_API_KEY or GROQ_API_KEY is configured.",
+        )
+
+    job = Job(
+        title=payload.title.strip(),
+        raw_jd=payload.raw_jd,
+        parsed_jd=parsed_jd.model_dump(),
+        department=payload.department,
+        location=payload.location,
+        employment_type=payload.employment_type,
+        status="open",
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    stats = await compute_job_stats(db, [job.id])
+    return job_to_response(job, stats[job.id])
+
+
+@router.get("", response_model=List[JobResponse])
+async def list_jobs(db: AsyncSession = Depends(get_db)):
+    """List all jobs with candidate pipeline statistics."""
+    result = await db.execute(select(Job).order_by(Job.created_at.desc()))
+    jobs = result.scalars().all()
+    stats = await compute_job_stats(db, [j.id for j in jobs])
+    return [job_to_response(j, stats[j.id]) for j in jobs]
+
+
+@router.get("/{job_id}", response_model=JobResponse)
+async def get_job(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Get single job detail with statistics."""
+    job = await _get_job_or_404(db, job_id)
+    stats = await compute_job_stats(db, [job_id])
+    return job_to_response(job, stats[job_id])
+
+
+@router.patch("/{job_id}", response_model=JobResponse)
+async def update_job(job_id: str, payload: JobUpdate, db: AsyncSession = Depends(get_db)):
+    """Update job metadata or open/paused/closed status."""
+    job = await _get_job_or_404(db, job_id)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(job, field, value)
+    await db.commit()
+    await db.refresh(job)
+    stats = await compute_job_stats(db, [job_id])
+    return job_to_response(job, stats[job_id])
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a job and every candidate, match, report and draft attached to it."""
+    job = await _get_job_or_404(db, job_id)
+    cand_ids = (await db.execute(select(Candidate.id).where(Candidate.job_id == job_id))).scalars().all()
+    await delete_job_tree(db, job.id, list(cand_ids))
+    await db.commit()
+    for cid in cand_ids:
+        faiss_store.remove_candidate(cid)
+
+
+@router.get("/{job_id}/candidates", response_model=List[TalentPoolItem])
+async def list_job_candidates(job_id: str, db: AsyncSession = Depends(get_db)):
+    """List every resume uploaded for a job, processed or not."""
+    job = await _get_job_or_404(db, job_id)
+    rows = await db.execute(
+        select(Candidate, JobCandidateMatch)
+        .outerjoin(JobCandidateMatch, JobCandidateMatch.candidate_id == Candidate.id)
+        .where(Candidate.job_id == job_id)
+        .order_by(Candidate.created_at.desc())
+    )
+    items = []
+    for cand, match in rows.all():
+        display = candidate_display(cand)
+        profile = cand.parsed_profile or {}
+        items.append(TalentPoolItem(
+            candidate_id=cand.id,
+            job_id=job_id,
+            job_title=job.title,
+            name=display["name"],
+            email=display["email"],
+            filename=cand.filename,
+            skills=profile.get("skills") or [],
+            total_experience_years=float(profile.get("total_experience_years") or 0.0),
+            final_score=match.final_score if match else None,
+            status=match.status if match else "Unprocessed",
+            integrity_risk=integrity_risk(cand),
+            created_at=cand.created_at,
+        ))
+    return items
+
+
+@router.post("/{job_id}/resumes", status_code=201)
 async def upload_resumes(
     job_id: str,
     files: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db)
 ):
     """Upload resume files for a job, parse text, and persist candidate records."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    await _get_job_or_404(db, job_id)
 
-    uploaded_candidates = []
+    if len(files) > settings.max_files_per_upload:
+        raise HTTPException(status_code=413, detail=f"At most {settings.max_files_per_upload} files per upload.")
+
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    uploaded, skipped = [], []
     for file in files:
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in settings.allowed_extensions:
+            skipped.append({"filename": file.filename, "reason": f"Unsupported file type '{ext or 'none'}'"})
+            continue
         file_bytes = await file.read()
+        if len(file_bytes) > max_bytes:
+            skipped.append({"filename": file.filename, "reason": f"Exceeds {settings.max_upload_mb} MB limit"})
+            continue
+
         extracted_text = parse_resume_file(file.filename, file_bytes)
+        if not extracted_text.strip():
+            skipped.append({"filename": file.filename, "reason": "No extractable text (scanned image PDF?)"})
+            continue
 
-        if not extracted_text:
-            extracted_text = f"Candidate Resume ({file.filename}) - text extraction returned empty."
-
+        # Guardrail: detect and strip hidden / injected instructions before any agent reads the text.
+        sanitized_text, integrity = analyze_resume(file.filename, file_bytes, extracted_text)
         candidate = Candidate(
-            job_id=job_id,
-            filename=file.filename,
-            raw_resume_text=extracted_text
+            job_id=job_id, filename=file.filename, raw_resume_text=sanitized_text, integrity_report=integrity,
         )
         db.add(candidate)
-        uploaded_candidates.append(candidate)
+        uploaded.append(candidate)
 
     await db.commit()
-    for c in uploaded_candidates:
-        await db.refresh(c)
-
-    return {"message": f"Successfully uploaded {len(uploaded_candidates)} resumes.", "job_id": job_id}
-
-@router.post("/{job_id}/run")
-async def run_matching_pipeline(job_id: str, db: AsyncSession = Depends(get_db)):
-    """Execute LangGraph Multi-Agent Orchestration pipeline for a job's candidate batch."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    res_cands = await db.execute(select(Candidate).where(Candidate.job_id == job_id))
-    candidates = res_cands.scalars().all()
-
-    if not candidates:
-        raise HTTPException(status_code=400, detail="No resumes uploaded for this job yet.")
-
-    resumes_input = [
-        {"id": c.id, "filename": c.filename, "raw_text": c.raw_resume_text}
-        for c in candidates
-    ]
-
-    # Initialize Graph State
-    initial_state = {
+    return {
+        "message": f"Uploaded {len(uploaded)} resume(s).",
         "job_id": job_id,
-        "raw_jd": job.raw_jd,
-        "parsed_jd": None,
-        "resumes": resumes_input,
-        "parsed_candidates": [],
-        "match_results": [],
-        "audit_report": None,
-        "executive_report": None,
-        "email_drafts": [],
-        "error": None
+        "uploaded": [
+            {"candidate_id": c.id, "filename": c.filename, "integrity_risk": c.integrity_report["risk_level"]}
+            for c in uploaded
+        ],
+        "skipped": skipped,
     }
 
-    # Execute LangGraph Pipeline
-    final_state = await smart_hire_app.ainvoke(initial_state)
 
-    if final_state.get("error"):
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {final_state['error']}")
+@router.post("/{job_id}/run")
+async def run_matching_pipeline(job_id: str):
+    """Run the LangGraph pipeline and wait for it to finish (simple clients, tests)."""
+    if progress_bus.is_running(job_id):
+        raise HTTPException(status_code=409, detail="A pipeline run is already in progress for this job.")
+    try:
+        return await execute_pipeline(job_id)
+    except PipelineError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
-    # Update Parsed Candidate Profiles in DB
-    for cand_db, parsed_prof in zip(candidates, final_state["parsed_candidates"]):
-        cand_db.parsed_profile = parsed_prof.model_dump()
-        db.add(cand_db)
 
-    # Persist Match Results
-    for m in final_state["match_results"]:
-        # Check existing match row
-        res_existing = await db.execute(
-            select(JobCandidateMatch).where(
-                JobCandidateMatch.job_id == job_id,
-                JobCandidateMatch.candidate_id == m["candidate_id"]
-            )
-        )
-        existing_match = res_existing.scalar_one_or_none()
-        
-        if existing_match:
-            existing_match.semantic_score = m.get("semantic_score", 0.0)
-            existing_match.skill_score = m.get("skill_score", 0.0)
-            existing_match.experience_score = m.get("experience_score", 0.0)
-            existing_match.project_score = m.get("project_score", 0.0)
-            existing_match.education_score = m.get("education_score", 0.0)
-            existing_match.final_score = m.get("final_score", 0.0)
-            existing_match.confidence_score = m.get("confidence_score", 0.0)
-            existing_match.matched_skills = m.get("matched_skills", [])
-            existing_match.missing_skills = m.get("missing_skills", [])
-            existing_match.reasoning = m.get("reasoning", "")
-            existing_match.status = m.get("status", "Pending")
-        else:
-            match_row = JobCandidateMatch(
-                job_id=job_id,
-                candidate_id=m["candidate_id"],
-                semantic_score=m.get("semantic_score", 0.0),
-                skill_score=m.get("skill_score", 0.0),
-                experience_score=m.get("experience_score", 0.0),
-                project_score=m.get("project_score", 0.0),
-                education_score=m.get("education_score", 0.0),
-                final_score=m.get("final_score", 0.0),
-                confidence_score=m.get("confidence_score", 0.0),
-                matched_skills=m.get("matched_skills", []),
-                missing_skills=m.get("missing_skills", []),
-                reasoning=m.get("reasoning", ""),
-                status=m.get("status", "Pending")
-            )
-            db.add(match_row)
+@router.post("/{job_id}/runs", status_code=202)
+async def start_pipeline_run(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Start the pipeline in the background; follow it via GET /jobs/{id}/runs/events (SSE)."""
+    await _get_job_or_404(db, job_id)
+    if progress_bus.is_running(job_id):
+        raise HTTPException(status_code=409, detail="A pipeline run is already in progress for this job.")
+    count = len((await db.execute(select(Candidate.id).where(Candidate.job_id == job_id))).scalars().all())
+    if not count:
+        raise HTTPException(status_code=400, detail="No resumes uploaded for this job yet.")
 
-    # Persist Executive Report
-    if final_state.get("executive_report"):
-        er_data = final_state["executive_report"]
-        er = ExecutiveReport(
-            job_id=job_id,
-            summary_text=er_data.get("summary_text", ""),
-            key_strengths=er_data.get("key_strengths", []),
-            skill_gaps=er_data.get("skill_gaps", []),
-            hiring_recommendations=er_data.get("hiring_recommendations", [])
-        )
-        db.add(er)
+    progress_bus.start(job_id, total=count)
 
-    # Persist Audit Report
-    if final_state.get("audit_report"):
-        ar_data = final_state["audit_report"]
-        ar = AuditReport(
-            job_id=job_id,
-            blind_scores=ar_data.get("blind_scores", {}),
-            disparate_impact_summary=ar_data.get("disparate_impact_summary", {})
-        )
-        db.add(ar)
+    async def _run():
+        try:
+            await execute_pipeline(job_id)
+        except PipelineError:
+            pass  # already published as a 'failed' event
 
-    # Persist Email Drafts
-    if final_state.get("email_drafts"):
-        for d in final_state["email_drafts"]:
-            email_row = EmailDraft(
-                job_id=job_id,
-                candidate_id=d["candidate_id"],
-                type=d["type"],
-                subject=d["subject"],
-                body=d["body"],
-                status="draft"
-            )
-            db.add(email_row)
+    task = asyncio.create_task(_run())
+    _background_runs.add(task)
+    task.add_done_callback(_background_runs.discard)
+    return {"status": "running", "job_id": job_id, "total": count}
 
-    await db.commit()
-    return {"message": "LangGraph multi-agent pipeline completed successfully.", "job_id": job_id}
 
-@router.get("/{job_id}/results", response_model=List[MatchResultResponse])
-async def get_job_results(job_id: str, db: AsyncSession = Depends(get_db)):
-    """Fetch ranked candidate leaderboard with Explainable AI score breakdown."""
+@router.get("/{job_id}/runs/status")
+async def pipeline_run_status(job_id: str):
+    """Latest progress snapshot for this job's pipeline run."""
+    snap = progress_bus.snapshot(job_id)
+    if not snap:
+        return {"job_id": job_id, "status": "idle"}
+    return {k: v for k, v in snap.items() if k != "events"} | {"recent_events": snap["events"][-30:]}
+
+
+@router.get("/{job_id}/runs/events")
+async def pipeline_run_events(job_id: str, request: Request):
+    """Server-Sent Events stream of live agent progress."""
+    def sse(data: dict, event: str = "") -> str:
+        prefix = f"event: {event}\n" if event else ""
+        return f"{prefix}data: {json.dumps(data)}\n\n"
+
+    async def stream():
+        snap = progress_bus.snapshot(job_id)
+        if not snap:
+            yield sse({"job_id": job_id, "status": "idle"}, "snapshot")
+            return
+        yield sse({k: v for k, v in snap.items() if k != "events"} | {"events": snap["events"][-50:]}, "snapshot")
+        if snap["status"] != "running":
+            return
+        async for event in progress_bus.subscribe(job_id):
+            if await request.is_disconnected():
+                return
+            # SSE comment line: keeps the connection alive without reaching the client's handlers.
+            yield ": ping\n\n" if event.get("type") == "heartbeat" else sse(event)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _ranked_results(db: AsyncSession, job_id: str) -> List[MatchResultResponse]:
     query = (
         select(JobCandidateMatch, Candidate)
         .join(Candidate, JobCandidateMatch.candidate_id == Candidate.id)
@@ -213,34 +266,40 @@ async def get_job_results(job_id: str, db: AsyncSession = Depends(get_db)):
         .order_by(JobCandidateMatch.final_score.desc())
     )
     result = await db.execute(query)
-    rows = result.all()
+    return [match_to_response(m, c) for m, c in result.all()]
 
-    output = []
-    for match, candidate in rows:
-        cand_prof = candidate.parsed_profile or {}
-        cand_name = cand_prof.get("name") or candidate.filename or "Unknown Candidate"
-        cand_email = cand_prof.get("email") or ""
 
-        match_res = MatchResultResponse(
-            id=match.id,
-            job_id=match.job_id,
-            candidate_id=match.candidate_id,
-            candidate_name=cand_name,
-            candidate_email=cand_email,
-            filename=candidate.filename,
-            semantic_score=match.semantic_score,
-            skill_score=match.skill_score,
-            experience_score=match.experience_score,
-            project_score=match.project_score,
-            education_score=match.education_score,
-            final_score=match.final_score,
-            confidence_score=match.confidence_score,
-            matched_skills=match.matched_skills or [],
-            missing_skills=match.missing_skills or [],
-            reasoning=match.reasoning or "",
-            status=match.status or "Pending",
-            created_at=match.created_at
-        )
-        output.append(match_res)
+@router.get("/{job_id}/results", response_model=List[MatchResultResponse])
+async def get_job_results(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Fetch ranked candidate leaderboard with Explainable AI score breakdown."""
+    return await _ranked_results(db, job_id)
 
-    return output
+
+@router.get("/{job_id}/results/export")
+async def export_job_results(job_id: str, db: AsyncSession = Depends(get_db)):
+    """Download the ranked leaderboard as CSV."""
+    job = await _get_job_or_404(db, job_id)
+    results = await _ranked_results(db, job_id)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "Rank", "Candidate", "Email", "Status", "Final Score", "Semantic", "Skills",
+        "Experience", "Projects", "Education", "Confidence", "Years Experience",
+        "Matched Skills", "Missing Skills", "Reasoning", "Recruiter Notes",
+    ])
+    for rank, r in enumerate(results, 1):
+        writer.writerow([
+            rank, r.candidate_name, r.candidate_email, r.status,
+            f"{r.final_score * 100:.1f}", f"{r.semantic_score * 100:.1f}", f"{r.skill_score * 100:.1f}",
+            f"{r.experience_score * 100:.1f}", f"{r.project_score * 100:.1f}", f"{r.education_score * 100:.1f}",
+            f"{r.confidence_score * 100:.0f}", r.total_experience_years,
+            "; ".join(r.matched_skills), "; ".join(r.missing_skills), r.reasoning, r.notes,
+        ])
+
+    safe_title = "".join(ch if ch.isalnum() else "_" for ch in job.title).strip("_") or "job"
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="smarthire_{safe_title}_shortlist.csv"'},
+    )

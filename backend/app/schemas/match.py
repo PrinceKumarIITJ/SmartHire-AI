@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
+MATCH_STATUSES = ("Pending", "Shortlisted", "Interview", "Rejected")
+
 class MatchResultResponse(BaseModel):
     id: str
     job_id: str
@@ -23,9 +25,18 @@ class MatchResultResponse(BaseModel):
     matched_skills: List[str] = Field(default_factory=list)
     missing_skills: List[str] = Field(default_factory=list)
     reasoning: str = ""
-    status: str = "Pending"  # 'Shortlisted', 'Rejected', 'Pending'
+    status: str = "Pending"  # 'Shortlisted', 'Interview', 'Rejected', 'Pending'
+    notes: str = ""
+    status_source: str = "ai"
+    integrity_risk: str = "low"
+    integrity_flags: int = 0
+    total_experience_years: float = 0.0
 
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+class MatchUpdate(BaseModel):
+    status: Optional[str] = Field(default=None, pattern="^(Pending|Shortlisted|Interview|Rejected)$")
+    notes: Optional[str] = Field(default=None, max_length=5000)

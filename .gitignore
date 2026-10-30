@@ -20,3 +20,14 @@ data/faiss_index/
 reports/
 fix_quotes.py
 .DS_Store
+
+# Generated manual-testing data (recreate with: python testing/generate_test_data.py)
+testing/data/
+
+# Vercel CLI and local frontend env
+.vercel/
+.env*.local
+.env.backup
+
+# TypeScript build cache
+*.tsbuildinfo

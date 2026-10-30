@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from backend.app.db.database import get_db
 from backend.app.db.models import ExecutiveReport, Job, JobCandidateMatch, Candidate
 from backend.app.schemas.report import ExecutiveReportResponse
@@ -9,15 +9,18 @@ from backend.app.agents.report_agent import run_report_agent
 import logging
 
 logger = logging.getLogger("smarthire.api.reports")
-router = APIRouter(prefix="/api/reports", tags=["Executive Reports"])
+router = APIRouter(prefix="/reports", tags=["Executive Reports"])
 
 @router.get("/jobs/{job_id}", response_model=ExecutiveReportResponse)
-async def get_or_generate_executive_report(job_id: str, db: AsyncSession = Depends(get_db)):
+async def get_or_generate_executive_report(job_id: str, refresh: bool = False, db: AsyncSession = Depends(get_db)):
     """Fetch or generate Executive Hiring Report synthesized by AI Report Agent."""
-    res_report = await db.execute(select(ExecutiveReport).where(ExecutiveReport.job_id == job_id).order_by(ExecutiveReport.created_at.desc()))
-    existing = res_report.scalar_one_or_none()
-    if existing:
-        return existing
+    if refresh:
+        await db.execute(delete(ExecutiveReport).where(ExecutiveReport.job_id == job_id))
+    else:
+        res_report = await db.execute(select(ExecutiveReport).where(ExecutiveReport.job_id == job_id).order_by(ExecutiveReport.created_at.desc()))
+        existing = res_report.scalars().first()
+        if existing:
+            return existing
 
     job = await db.get(Job, job_id)
     if not job:
@@ -45,7 +48,11 @@ async def get_or_generate_executive_report(job_id: str, db: AsyncSession = Depen
         })
 
     parsed_jd = JobDescription(**job.parsed_jd) if job.parsed_jd else JobDescription(title=job.title)
-    report_schema = await run_report_agent(parsed_jd, matches_list)
+    try:
+        report_schema = await run_report_agent(parsed_jd, matches_list)
+    except Exception as e:
+        logger.error(f"Report Agent failed: {e}")
+        raise HTTPException(status_code=502, detail="The Report Agent is unavailable. Check the LLM provider configuration.")
 
     new_report = ExecutiveReport(
         job_id=job_id,

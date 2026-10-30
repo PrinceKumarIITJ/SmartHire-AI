@@ -1,23 +1,39 @@
 import "./globals.css";
-import Navbar from "@/components/Navbar";
+import type { Metadata, Viewport } from "next";
+import { Inter, Sora } from "next/font/google";
+import { ThemeProvider, themeInitScript } from "@/components/layout/theme";
+import { ToastProvider } from "@/components/ui/toast";
 
-export const metadata = {
-  title: "SmartHire AI — Multi-Agent Recruitment Intelligence Platform",
-  description: "AI-powered candidate screening platform with 7 specialized agents, Explainable AI scoring, RAG chat, and Bias Auditing.",
+const sans = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
+const display = Sora({ subsets: ["latin"], variable: "--font-display", display: "swap", weight: ["400", "500", "600", "700"] });
+
+export const metadata: Metadata = {
+  title: {
+    default: "SmartHire — AI Recruiting Intelligence",
+    template: "%s · SmartHire",
+  },
+  description:
+    "SmartHire screens, ranks and explains every candidate with a team of AI agents: structured parsing, explainable scoring, resume chat, fairness audits and human-approved outreach.",
+  applicationName: "SmartHire",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#070810" },
+    { media: "(prefers-color-scheme: light)", color: "#f6f7fc" },
+  ],
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-[#0b0d14] text-gray-100 min-h-screen flex flex-col">
-        <Navbar />
-        <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8">
-          {children}
-        </main>
+    <html lang="en" data-theme="dark" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body>
+        <ThemeProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

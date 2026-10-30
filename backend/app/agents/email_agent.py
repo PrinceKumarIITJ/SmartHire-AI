@@ -1,3 +1,4 @@
+import asyncio
 import os
 import smtplib
 from email.mime.text import MIMEText
@@ -5,8 +6,10 @@ from email.mime.multipart import MIMEMultipart
 from typing import Dict, Any
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
+from backend.app.core.config import get_settings
 from backend.app.services.llm_factory import get_llm
 from backend.app.prompts.prompt_loader import load_prompt_template
+from backend.app.services.tracing import traced_agent
 import logging
 
 logger = logging.getLogger("smarthire.agents.email_agent")
@@ -25,6 +28,7 @@ EMAIL_PROMPT = ChatPromptTemplate.from_messages([
     ("user", "Candidate Name: {candidate_name}\nJob Title: {job_title}\nMatch Score: {final_score}\nMatched Skills: {matched_skills}\nMissing Skills: {missing_skills}\nReasoning: {reasoning}")
 ])
 
+@traced_agent("email_agent")
 async def run_email_agent(
     candidate_name: str,
     job_title: str,
@@ -34,7 +38,7 @@ async def run_email_agent(
     Email Agent: Drafts a skills-grounded selection or rejection candidate notification.
     """
     final_score = match_data.get("final_score", 0.0)
-    email_type = "selection" if final_score >= 0.70 else "rejection"
+    email_type = "selection" if final_score >= get_settings().shortlist_threshold else "rejection"
     
     logger.info(f"Executing Email Agent to generate '{email_type}' draft for {candidate_name}...")
 
@@ -57,7 +61,7 @@ async def run_email_agent(
         return {"type": email_type, "subject": res.subject, "body": res.body}
     except Exception as e:
         logger.warning(f"Async LLM call failed in Email Agent: {e}. Trying sync invoke...")
-        res = chain.invoke(input_vars)
+        res = await asyncio.to_thread(chain.invoke, input_vars)
         return {"type": email_type, "subject": res.subject, "body": res.body}
 
 def send_smtp_email(to_email: str, subject: str, body: str) -> bool:
