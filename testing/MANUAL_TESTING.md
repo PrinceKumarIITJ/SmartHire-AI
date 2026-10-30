@@ -32,7 +32,7 @@ To start over at any point: stop the backend, delete `smarthire_manual_test.db`,
 ### 0.3 Start the frontend (second terminal)
 
 ```powershell
-cd "C:\Users\Prince Kumar\OneDrive\Documents\SmartHire\frontend"
+cd SmartHirerontend
 npm install
 npm run dev
 ```

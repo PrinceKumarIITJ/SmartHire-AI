@@ -369,7 +369,7 @@ python -m uvicorn backend.app.main:app --reload --port 8000
 **Frontend (second terminal):**
 
 ```powershell
-cd "C:\Users\Prince Kumar\OneDrive\Documents\SmartHire\frontend"
+cd SmartHirerontend
 npm install
 npm run dev
 ```
@@ -505,7 +505,7 @@ You should see `"status":"ok"` with `groq` listed in `llm_providers`.
 Sign up at https://vercel.com, then run:
 
 ```powershell
-cd "C:\Users\Prince Kumar\OneDrive\Documents\SmartHire\frontend"
+cd SmartHirerontend
 npx vercel login
 npx vercel
 ```
